@@ -13,7 +13,10 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Şarkı söylerken ses analizi yapmak için mikrofona ihtiyacımız var."
+      }
     },
     "android": {
       "adaptiveIcon": {
