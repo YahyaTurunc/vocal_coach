@@ -1,26 +1,23 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
 import { Audio } from 'expo-av';
-import { PitchDetector } from '../utils/PitchDetector';
-import { frequencyToMidi, midiToNoteName, getNoteAtTime, SongMap } from '../utils/AudioUtils';
+import PitchTraps from './PitchTraps'; // PitchTraps.tsx dosyasının aynı klasörde olduğundan emin ol
+import { frequencyToMidi, midiToNoteName } from '../utils/AudioUtils';
 import vocalMap from '../../assets/song_data/islak_islak/vocal_map.json';
-
-const { width } = Dimensions.get('window');
 
 export default function SingingGame() {
     const [isPlaying, setIsPlaying] = useState(false);
-    const [currentNote, setCurrentNote] = useState<string>('-');
-    const [targetNote, setTargetNote] = useState<string>('-');
-    const [targetMidi, setTargetMidi] = useState<number | null>(null);
-    const [feedbackColor, setFeedbackColor] = useState<string>('#808080'); // Gray
+    const [currentNote, setCurrentNote] = useState<string>('-'); // Senin söylediğin
+    const [targetNote, setTargetNote] = useState<string>('-');   // Olması gereken
+    const [feedbackColor, setFeedbackColor] = useState<string>('#808080'); // Gri renk
     const [score, setScore] = useState(0);
 
     const soundRef = useRef<Audio.Sound | null>(null);
-    const pitchDetectorRef = useRef<PitchDetector | null>(null);
     const animationFrameRef = useRef<number | null>(null);
+    const userMidiRef = useRef<number>(0); // Anlık ses verisi
 
+    // Sayfa kapandığında sesi durdur
     useEffect(() => {
-        pitchDetectorRef.current = new PitchDetector();
         return () => {
             stopGame();
         };
@@ -28,125 +25,153 @@ export default function SingingGame() {
 
     const startGame = async () => {
         try {
-            // Load Audio
+            // Eğer daha önce çalan varsa durdur
+            if (soundRef.current) {
+                await stopGame();
+            }
+
+            // --- MÜZİĞİ YÜKLE ---
+            // Dosya yolunun doğru olduğundan emin ol
             const { sound } = await Audio.Sound.createAsync(
-                // In a real app, require the local file. 
-                // For this demo, we assume the file exists or we catch the error.
-                // require('../../assets/song_data/islak_islak/backing_track.mp3')
-                // Using a dummy silent file or just proceeding without sound if missing would be safer for the code to run without crashing.
-                // But the user asked for the code structure.
-                // I will use a placeholder URI that works (e.g. a short beep or silence) or comment out.
-                // For now, I'll assume the user will provide the file.
                 require('../../assets/song_data/islak_islak/backing_track.mp3')
-                // { uri: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' } // Placeholder URL
             );
             soundRef.current = sound;
+
+            // --- MÜZİĞİ BAŞLAT ---
             await sound.playAsync();
-
-            // Start Pitch Detection
-            await pitchDetectorRef.current?.start((pitch) => {
-                const userMidi = frequencyToMidi(pitch);
-                const userNoteName = midiToNoteName(userMidi);
-                setCurrentNote(userNoteName);
-
-                // We need to compare with target in the loop, but we can also store the latest pitch here.
-                // Actually, the loop handles the comparison based on time.
-                // We'll store the userMidi in a ref to access it in the loop?
-                // Or just update state and let the loop read state? 
-                // State updates are async, so ref is better for the loop.
-                userMidiRef.current = userMidi;
-            });
-
             setIsPlaying(true);
+
+            // --- OYUN DÖNGÜSÜNÜ BAŞLAT ---
             gameLoop();
         } catch (error) {
-            console.error("Error starting game:", error);
+            console.error("Oyun başlatma hatası:", error);
+            alert("Müzik dosyası bulunamadı veya hata oluştu.");
         }
     };
-
-    const userMidiRef = useRef<number>(0);
 
     const stopGame = async () => {
         setIsPlaying(false);
+        // Döngüyü durdur
         if (animationFrameRef.current) {
             cancelAnimationFrame(animationFrameRef.current);
+            animationFrameRef.current = null;
         }
+        // Sesi durdur ve hafızadan sil
         if (soundRef.current) {
-            await soundRef.current.unloadAsync();
+            try {
+                await soundRef.current.stopAsync();
+                await soundRef.current.unloadAsync();
+            } catch (e) {
+                console.log("Ses durdurma hatası", e);
+            }
             soundRef.current = null;
         }
-        await pitchDetectorRef.current?.stop();
+        // Ekranı sıfırla
+        setTargetNote('-');
+        setCurrentNote('-');
+        setFeedbackColor('#808080');
     };
 
     const gameLoop = async () => {
+        // Eğer müzik yoksa veya durduysa döngüden çık
         if (!soundRef.current) return;
 
         const status = await soundRef.current.getStatusAsync();
         if (!status.isLoaded) return;
 
-        const currentTime = status.positionMillis / 1000; // seconds
+        // Şarkının bitip bitmediğini kontrol et
+        if (status.didJustFinish) {
+            stopGame();
+            return;
+        }
 
-        // User logic:s
+        // Şarkının o anki saniyesi
+        const currentTime = status.positionMillis / 1000;
+
+        // --- 1. JSON HARİTASINDAN NOTAYI BUL ---
+        // (Buradaki '...' hatasını düzelttim, artık gerçek mantık var)
         // @ts-ignore
-        const currentNote = vocalMap.tracks[0].notes.find((note: any) => {
+        const foundNote = vocalMap.tracks[0].notes.find((note: any) => {
             return currentTime >= note.time && currentTime <= (note.time + note.duration);
         });
 
-        if (currentNote) {
-            setTargetNote(currentNote.name);
-            setTargetMidi(currentNote.midi);
+        // --- 2. FİLTRELEME VE KIYASLAMA ---
+        // Nota bulunduysa VE notanın değeri 40'tan büyükse (Çok kalın dip sesleri yoksaymak için)
+        if (foundNote && foundNote.midi > 40) {
+            setTargetNote(foundNote.name); // Hedefi ekrana yaz (Örn: A4)
 
-            const userMidi = userMidiRef.current;
-            // Compare
+            const userMidi = userMidiRef.current; // PitchTraps'ten gelen ses
+
+            // Kullanıcı bir ses çıkarıyor mu? (0 değilse ses var demektir)
             if (userMidi > 0) {
-                const diff = Math.abs(userMidi - currentNote.midi);
+                const diff = Math.abs(userMidi - foundNote.midi);
+
+                // Eğer fark 1 veya daha azsa (Doğru nota)
                 if (diff <= 1) {
-                    setFeedbackColor('#4CAF50'); // Green
-                    setScore(s => s + 1);
+                    setFeedbackColor('#4CAF50'); // YEŞİL
+                    setScore(s => s + 1);       // Puan artır
                 } else {
-                    setFeedbackColor('#F44336'); // Red
+                    setFeedbackColor('#F44336'); // KIRMIZI
                 }
             } else {
-                setFeedbackColor('#808080'); // Gray (Silence)
+                setFeedbackColor('#808080'); // GRİ (Kullanıcı susuyor)
             }
         } else {
+            // O saniyede vokal yoksa
             setTargetNote('-');
-            setTargetMidi(null);
             setFeedbackColor('#808080');
         }
 
-        if (status.isPlaying) {
+        // --- 3. DÖNGÜYÜ TEKRARLA ---
+        if (isPlaying) {
             animationFrameRef.current = requestAnimationFrame(gameLoop);
-        } else {
-            setIsPlaying(false);
         }
     };
 
     return (
         <View style={styles.container}>
-            <Text style={styles.title}>Singing Teacher</Text>
+            <Text style={styles.title}>Şan Hocası</Text>
             <Text style={styles.songName}>Islak Islak</Text>
 
+            {/* Senin Sesin */}
             <View style={[styles.feedbackCircle, { backgroundColor: feedbackColor }]}>
                 <Text style={styles.noteText}>{currentNote}</Text>
-                <Text style={styles.label}>You</Text>
+                <Text style={styles.label}>Sen</Text>
             </View>
 
+            {/* Hedef Nota */}
             <View style={styles.targetContainer}>
-                <Text style={styles.label}>Target</Text>
+                <Text style={styles.label}>Söylemen Gereken</Text>
                 <Text style={styles.targetNote}>{targetNote}</Text>
             </View>
 
-            <Text style={styles.score}>Score: {score}</Text>
+            <Text style={styles.score}>Puan: {score}</Text>
 
             <TouchableOpacity
                 style={styles.button}
                 onPress={isPlaying ? stopGame : startGame}
             >
                 <Text style={styles.buttonText}>
-                    {isPlaying ? 'Stop' : 'Start Singing'}
+                    {isPlaying ? 'Durdur' : 'Başla'}
                 </Text>
             </TouchableOpacity>
+
+            {/* GİZLİ MİKROFON DİNLEYİCİSİ (Burası sesi analiz eder) */}
+            {isPlaying && (
+                <PitchTraps
+                    onPitchDetected={(freq) => {
+                        const userMidi = frequencyToMidi(freq);
+                        userMidiRef.current = userMidi; // Oyuna gönder
+
+                        // Sadece ses varsa ekrana yaz, yoksa '-' koy
+                        if (userMidi > 0) {
+                            setCurrentNote(midiToNoteName(userMidi));
+                        } else {
+                            setCurrentNote('-');
+                        }
+                    }}
+                />
+            )}
         </View>
     );
 }
@@ -190,8 +215,8 @@ const styles = StyleSheet.create({
         marginBottom: 40,
     },
     targetNote: {
-        fontSize: 36,
-        color: '#FFD700', // Gold
+        fontSize: 48,
+        color: '#FFD700', // Altın Sarısı
         fontWeight: 'bold',
     },
     label: {
