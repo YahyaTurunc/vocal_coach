@@ -1,9 +1,11 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
-import { Audio } from 'expo-av';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, AppState } from 'react-native';
+import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import PitchTraps from './PitchTraps';
 import { frequencyToMidi, midiToNoteName } from '../utils/AudioUtils';
 import vocalMap from '../../assets/song_data/islak_islak/vocal_map.json';
+
+const VOCAL_DELAY = 34.5;
 
 export default function SingingGame() {
     const [isPlaying, setIsPlaying] = useState(false);
@@ -12,31 +14,45 @@ export default function SingingGame() {
     const [statusMessage, setStatusMessage] = useState<string>('');
     const [feedbackColor, setFeedbackColor] = useState<string>('#808080');
     const [score, setScore] = useState(0);
-    const [currentTime, setCurrentTime] = useState(0); // Ekranda süreyi görmek için
+    const [currentTime, setCurrentTime] = useState(0);
+    const [webViewLoaded, setWebViewLoaded] = useState(false); // WebView hazır mı?
 
     const soundRef = useRef<Audio.Sound | null>(null);
     const userMidiRef = useRef<number>(0);
 
+    // Uygulama arka plana atılırsa sesi yönetmek için
     useEffect(() => {
-        setupAudioMode();
+        const subscription = AppState.addEventListener('change', (nextAppState) => {
+            if (nextAppState === 'active') {
+                configureAudio(); // Uygulama öne gelince sesi düzelt
+            }
+        });
+
+        configureAudio(); // İlk açılışta ayarla
+
         return () => {
-            stopGame(); // Çıkışta temizle
+            stopGame();
+            subscription.remove();
         };
     }, []);
 
-    // 1. SES AYARLARI (Hoparlör Sorunu Çözümü)
-    const setupAudioMode = async () => {
+    // --- KRİTİK SES AYARI ---
+    // Bu fonksiyonu hem başta hem de oyun başlarken çağıracağız.
+    const configureAudio = async () => {
         try {
-            await Audio.requestPermissionsAsync();
             await Audio.setAudioModeAsync({
-                allowsRecordingIOS: true,
-                playsInSilentModeIOS: true, // Bu ikisi hoparlörü açar
-                staysActiveInBackground: false,
+                allowsRecordingIOS: true, // Mikrofon izni
+                playsInSilentModeIOS: true, // Sessiz modda çal
+                // MixWithOthers: WebView mikrofonu ile Expo müziğinin aynı anda çalışmasını sağlar
+                interruptionModeIOS: InterruptionModeIOS.MixWithOthers,
+                interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
                 shouldDuckAndroid: false,
+                staysActiveInBackground: true,
                 playThroughEarpieceAndroid: false,
             });
+            console.log("Ses modu yapılandırıldı: MixWithOthers");
         } catch (e) {
-            console.error("Audio mode hatası:", e);
+            console.error("Ses modu hatası:", e);
         }
     };
 
@@ -46,29 +62,37 @@ export default function SingingGame() {
                 await stopGame();
             }
 
-            // Müzik dosyasını yükle
+            // Önce ses modunu tekrar zorla (WebView bozmuş olabilir diye)
+            await configureAudio();
+
             const { sound } = await Audio.Sound.createAsync(
                 require('../../assets/song_data/islak_islak/backing_track.mp3'),
-                { shouldPlay: true } // Yüklenince otomatik çal
+                { shouldPlay: false }
             );
 
             soundRef.current = sound;
-            setIsPlaying(true);
 
-            // 2. PERFORMANS AYARI (Loop Sorunu Çözümü)
-            // Eski 'gameLoop' yerine Expo'nun kendi güncelleme servisini kullanıyoruz.
-            // Bu sistem telefonu yormaz ve takılmaz.
             sound.setOnPlaybackStatusUpdate((status) => {
                 if (status.isLoaded) {
-                    // Şarkı bittiyse durdur
                     if (status.didJustFinish) {
                         stopGame();
                         return;
                     }
-                    // Oyun mantığını her güncellemede çalıştır
+
+                    // --- KESİNTİ KORUMASI ---
+                    // Eğer sistem (WebView) müziği durdurduysa ve biz durdurmadıysak, zorla tekrar başlat.
+                    if (!status.isPlaying && isPlaying && !status.didJustFinish) {
+                        console.log("Müzik kesildi, tekrar başlatılıyor...");
+                        sound.playAsync();
+                    }
+
                     handleGameLogic(status.positionMillis / 1000);
                 }
             });
+
+            // Sesi başlat
+            await sound.playAsync();
+            setIsPlaying(true);
 
         } catch (error) {
             console.error("Başlatma hatası:", error);
@@ -91,23 +115,23 @@ export default function SingingGame() {
         setCurrentTime(0);
     };
 
-    // Oyun Mantığı (Takılmadan Çalışır)
     const handleGameLogic = (timeInSeconds: number) => {
-        setCurrentTime(timeInSeconds); // Süreyi güncelle
+        setCurrentTime(timeInSeconds);
+        const mapTime = timeInSeconds - VOCAL_DELAY;
 
-        // 35. saniyeden önce 'Hazırlan' yaz
-        // Not: JSON dosyanızda 4. saniyede notalar var görünüyor ama
-        // sizin MP3'ünüzde vokal 35'te başlıyorsa JSON ve MP3 senkron değildir.
-        // Yine de bu kod JSON'a sadık kalır.
+        if (mapTime < 0) {
+            setStatusMessage(`Vokale ${Math.ceil(Math.abs(mapTime))} sn...`);
+            setTargetNote('-');
+            setFeedbackColor('#808080');
+            return;
+        }
 
-        // JSON Haritasından notayı bul
         // @ts-ignore
         const foundNote = vocalMap.tracks[0].notes.find((note: any) => {
-            return timeInSeconds >= note.time && timeInSeconds <= (note.time + note.duration);
+            return mapTime >= note.time && mapTime <= (note.time + note.duration);
         });
 
         if (foundNote && foundNote.midi > 40) {
-            // Nota varsa
             setTargetNote(foundNote.name);
             setStatusMessage('');
 
@@ -115,25 +139,18 @@ export default function SingingGame() {
             if (userMidi > 0) {
                 const diff = Math.abs(userMidi - foundNote.midi);
                 if (diff <= 1) {
-                    setFeedbackColor('#4CAF50'); // Yeşil
+                    setFeedbackColor('#4CAF50');
                     setScore(s => s + 1);
                 } else {
-                    setFeedbackColor('#F44336'); // Kırmızı
+                    setFeedbackColor('#F44336');
                 }
             } else {
                 setFeedbackColor('#808080');
             }
         } else {
-            // Nota yoksa (Intro veya Es)
             setTargetNote('-');
             setFeedbackColor('#808080');
-
-            // Eğer süre 30 saniyeden azsa "Hazırlan" yaz (Sizin 35sn bilginize istinaden)
-            if (timeInSeconds < 4.0) {
-                setStatusMessage('Müzik çalıyor...');
-            } else {
-                setStatusMessage('');
-            }
+            setStatusMessage('Dinle...');
         }
     };
 
@@ -142,7 +159,6 @@ export default function SingingGame() {
             <Text style={styles.title}>Şan Hocası</Text>
             <Text style={styles.songName}>Islak Islak</Text>
 
-            {/* Süre Göstergesi (Debug için iyi olur) */}
             <Text style={styles.timer}>{currentTime.toFixed(1)}s</Text>
 
             <View style={[styles.feedbackCircle, { backgroundColor: feedbackColor }]}>
@@ -167,16 +183,17 @@ export default function SingingGame() {
                 </Text>
             </TouchableOpacity>
 
-            {/* Mikrofon Dinleyici */}
-            {isPlaying && (
-                <PitchTraps
-                    onPitchDetected={(freq) => {
+            {/* Mikrofon Dinleyici - Her zaman render edip arka planda hazır tutuyoruz */}
+            <PitchTraps
+                onPitchDetected={(freq) => {
+                    // Sadece oyun oynanıyorsa veriyi işle
+                    if (isPlaying) {
                         const userMidi = frequencyToMidi(freq);
                         userMidiRef.current = userMidi;
                         if (userMidi > 0) setCurrentNote(midiToNoteName(userMidi));
-                    }}
-                />
-            )}
+                    }
+                }}
+            />
         </View>
     );
 }
@@ -200,7 +217,7 @@ const styles = StyleSheet.create({
     noteText: { fontSize: 48, color: '#fff', fontWeight: 'bold' },
     targetContainer: { alignItems: 'center', marginBottom: 40, minHeight: 80 },
     targetNote: { fontSize: 48, color: '#FFD700', fontWeight: 'bold' },
-    statusText: { fontSize: 16, color: '#00bcd4', marginTop: 10, fontStyle: 'italic' },
+    statusText: { fontSize: 18, color: '#00bcd4', marginTop: 10, fontStyle: 'italic' },
     label: { fontSize: 14, color: '#ccc', marginTop: 5 },
     score: { fontSize: 20, color: '#fff', marginBottom: 30 },
     button: { backgroundColor: '#2196F3', paddingHorizontal: 40, paddingVertical: 15, borderRadius: 30 },

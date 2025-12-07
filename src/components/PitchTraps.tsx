@@ -81,27 +81,27 @@ setTimeout(start, 500);
 `;
 
 export default function PitchTraps({ onPitchDetected }: { onPitchDetected: (freq: number) => void }) {
-    return (
-        <View style={{ height: 0, width: 0, position: 'absolute' }}>
-            <WebView
-                // ÖNEMLİ: baseUrl ekledik. Bu sayede iOS bunu 'güvenli' sayar.
-                source={{ html: htmlContent, baseUrl: 'https://localhost/' }}
-                originWhitelist={['*']}
-                javaScriptEnabled={true}
-                allowsInlineMediaPlayback={true} // iOS için kritik
-                mediaPlaybackRequiresUserAction={false}
-                onMessage={(event) => {
-                    const data = event.nativeEvent.data;
-                    if (data.startsWith("ERROR")) {
-                        console.error("PitchTraps Error:", data);
-                        return;
-                    }
-                    const pitch = parseFloat(data);
-                    if (!isNaN(pitch)) {
-                        onPitchDetected(pitch);
-                    }
-                }}
-            />
-        </View>
-    );
+  return (
+    <View style={{ height: 0, width: 0, position: 'absolute' }}>
+      <WebView
+        // ÖNEMLİ: baseUrl ekledik. Bu sayede iOS bunu 'güvenli' sayar.
+        source={{ html: htmlContent, baseUrl: 'https://localhost/' }}
+        originWhitelist={['*']}
+        javaScriptEnabled={true}
+        allowsInlineMediaPlayback={true} // iOS için kritik
+        mediaPlaybackRequiresUserAction={false}
+        onMessage={(event) => {
+          const data = event.nativeEvent.data;
+          if (data.startsWith("ERROR")) {
+            console.error("PitchTraps Error:", data);
+            return;
+          }
+          const pitch = parseFloat(data);
+          if (!isNaN(pitch)) {
+            onPitchDetected(pitch);
+          }
+        }}
+      />
+    </View>
+  );
 }
